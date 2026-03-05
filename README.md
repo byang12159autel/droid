@@ -22,7 +22,7 @@ This guide has been used to set up 18 DROID robot platforms over the course of t
 If you encounter issues during setup, please raise them as issues in this github repo.
 
 ---------
-## Avantbot Droid Setup (Single Workstation)
+## Avantbot Setup (Single Workstation)
 
 This fork replaces the Polymetis control stack with [avantbot](https://github.com/autel-robotics/avantbot) CRISP controllers, allowing everything to run on a single workstation without a separate NUC or RT kernel. Tested on Ubuntu 22.04 with cpu core isolation.
 
@@ -135,9 +135,24 @@ python3 scripts/main.py \
 ```
 You will be prompted to enter a language instruction. The robot will then execute the policy and save a video of the rollout.
 
+### Live Camera Viewer (Viser)
+
+Add `--viser_port=8085` to stream all ZED camera feeds to a web viewer:
+
+```bash
+python3 scripts/main.py \
+  --remote_host=127.0.0.1 \
+  --remote_port=8000 \
+  --external_camera=right \
+  --viser_port=8085
+```
+
+Open `http://localhost:8085` in a browser to see live feeds from the left, right, and wrist cameras at 15 Hz. The viewer uses `avantbot.utils.viser_camera_viewer.ViserCameraViewer` and adds no overhead to the control loop.
+
 ### Notes
 
 - `--external_camera` selects which external ZED camera to feed to the policy (`left` or `right`).
+- `--viser_port` enables the Viser camera viewer on the given port (disabled by default).
 - Camera serial IDs are configured in `scripts/main.py` (`left_camera_id`, `right_camera_id`, `wrist_camera_id`). Update these if your hardware differs.
 - The policy runs at 15 Hz (DROID control frequency). Each inference returns an action chunk; by default 8 actions are executed open-loop before re-querying (`--open_loop_horizon`).
 - Press Ctrl+C during a rollout to stop it early. After each rollout you can rate success and optionally run another.

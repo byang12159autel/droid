@@ -47,6 +47,9 @@ class Args:
         8000  # point this to the port of the policy server, default server port for openpi servers is 8000
     )
 
+    # Viser camera viewer (set to a port like 8085 to enable, None to disable)
+    viser_port: int | None = None
+
 
 # We are using Ctrl+C to optionally terminate rollouts early -- however, if we press Ctrl+C while the policy server is
 # waiting for a new action chunk, it will raise an exception and the server connection dies.
@@ -80,6 +83,12 @@ def main(args: Args):
     env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
     print("Created the droid env!")
 
+    # Optional Viser camera viewer
+    viewer = None
+    if args.viser_port is not None:
+        from avantbot.utils.viser_camera_viewer import ViserCameraViewer
+        viewer = ViserCameraViewer(port=args.viser_port)
+
     # Connect to the policy server
     policy_client = websocket_client_policy.WebsocketClientPolicy(args.remote_host, args.remote_port)
 
@@ -109,6 +118,13 @@ def main(args: Args):
                 )
 
                 video.append(curr_obs[f"{args.external_camera}_image"])
+
+                if viewer is not None:
+                    viewer.update(
+                        left=curr_obs.get("left_image"),
+                        right=curr_obs.get("right_image"),
+                        wrist=curr_obs.get("wrist_image"),
+                    )
 
                 # Send websocket request to policy server if it's time to predict a new chunk
                 if actions_from_chunk_completed == 0 or actions_from_chunk_completed >= args.open_loop_horizon:
