@@ -2,7 +2,7 @@ import os
 from cv2 import aruco
 
 # Robot Params #
-nuc_ip = "127.0.0.1"
+nuc_ip = None
 robot_ip = "192.168.1.13"
 laptop_ip = "127.0.0.1"
 sudo_password = "3363"

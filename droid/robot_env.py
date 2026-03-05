@@ -31,9 +31,10 @@ class RobotEnv(gym.Env):
         self.control_hz = 15
 
         if nuc_ip is None:
-            from franka.robot import FrankaRobot
+            from droid.franka.crisp_robot import CrispFrankaRobot
 
-            self._robot = FrankaRobot()
+            self._robot = CrispFrankaRobot()
+            self._robot.launch_robot()
         else:
             self._robot = ServerInterface(ip_address=nuc_ip)
 

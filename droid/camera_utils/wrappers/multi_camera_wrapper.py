@@ -21,6 +21,11 @@ class MultiCameraWrapper:
         # Launch Camera #
         self.set_trajectory_mode()
 
+        failed = [cid for cid, cam in self.camera_dict.items() if not cam.is_running()]
+        for cid in failed:
+            print(f"WARNING: Camera {cid} failed to initialize, removing from active cameras")
+            del self.camera_dict[cid]
+
     ### Calibration Functions ###
     def get_camera(self, camera_id):
         return self.camera_dict[camera_id]
@@ -83,7 +88,10 @@ class MultiCameraWrapper:
         for cam_id in all_cam_ids:
             if not self.camera_dict[cam_id].is_running():
                 continue
-            data_dict, timestamp_dict = self.camera_dict[cam_id].read_camera()
+            result = self.camera_dict[cam_id].read_camera()
+            if result is None:
+                continue
+            data_dict, timestamp_dict = result
 
             for key in data_dict:
                 full_obs_dict[key].update(data_dict[key])

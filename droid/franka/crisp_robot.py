@@ -58,13 +58,20 @@ class CrispFrankaRobot:
             self._gripper = Gripper.from_yaml(
                 "gripper_franka", node=self._robot.node, spin_node=False
             )
+            print("[CrispFrankaRobot] Waiting for gripper on topic: "
+                  f"{self._gripper.config.joint_state_topic} ...")
             self._gripper.wait_until_ready(timeout=10.0)
-        except Exception:
+            print(f"[CrispFrankaRobot] Gripper ready — value={self._gripper.value:.3f}")
+        except Exception as e:
+            print(f"[CrispFrankaRobot] WARNING: Gripper init failed: {e}")
+            print("[CrispFrankaRobot] Gripper set to None — all gripper commands will be no-ops!")
             self._gripper = None
 
         self._ik_solver = RobotIKSolver()
 
         self._ensure_controller("joint_impedance_controller")
+        self._robot.set_target_joint(np.array(self.get_joint_positions()))
+        time.sleep(0.3)
         self._controller_not_loaded = False
 
     def kill_controller(self):
@@ -208,12 +215,20 @@ class CrispFrankaRobot:
                 blocking=True,
             )
             self._ensure_controller("joint_impedance_controller")
+            self._robot.set_target_joint(np.array(self.get_joint_positions()))
+            time.sleep(0.3)
             self._robot.wait_until_ready(timeout=5.0)
         else:
             self._ensure_controller("joint_impedance_controller")
             self._robot.set_target_joint(command)
 
     def update_gripper(self, command, velocity=True, blocking=False):
+        """Continuous gripper position control (like Polymetis goto).
+
+        Each call sets the gripper target position. The Robotiq adapter
+        (in continuous mode) converts this to a GripperCommand action that
+        preempts any in-flight motion, giving smooth non-blocking control.
+        """
         if self._gripper is None:
             return
 
@@ -222,8 +237,10 @@ class CrispFrankaRobot:
             command = gripper_delta + self.get_gripper_position()
 
         command = float(np.clip(command, 0, 1))
+        avantbot_target = 1.0 - command
+        print(f"[gripper] policy={command:.3f} → robotiq={avantbot_target:.3f}  (cur={self._gripper.value:.3f})")
         # DROID: 0=open, 1=closed; avantbot: 0=closed, 1=open
-        self._gripper.set_target(1.0 - command)
+        self._gripper.set_target(avantbot_target)
 
         if blocking:
             time.sleep(1.0)
@@ -245,11 +262,11 @@ class CrispFrankaRobot:
 
         return noisy_joints.tolist()
 
-    def adaptive_time_to_go(self, desired_joint_position, t_min=0.5, t_max=4.0):
+    def adaptive_time_to_go(self, desired_joint_position, t_min=0.5, t_max=8.0):
         curr = np.array(self.get_joint_positions())
         desired = np.array(desired_joint_position)
         max_displacement = np.max(np.abs(desired - curr))
-        time_to_go = max_displacement / 0.5
+        time_to_go = max_displacement / 0.25
         return float(np.clip(time_to_go, t_min, t_max))
 
     def create_action_dict(self, action, action_space, gripper_action_space=None, robot_state=None):
