@@ -53,6 +53,13 @@ class Args:
     # ZED camera serial to stream point clouds for (requires --viser_port, None to disable)
     pointcloud_camera_id: str | None = "32923065"
 
+    # URDF visualization (requires --viser_port; set to "" to disable)
+    urdf_path: str = os.path.join(
+        os.path.expanduser("~"),
+        "avantbot", "robots", "franka_re3", "crisp_controllers_demos",
+        "crisp_controllers_robot_demos", "config", "fr3", "fr3_robotiq.urdf",
+    )
+
 
 # We are using Ctrl+C to optionally terminate rollouts early -- however, if we press Ctrl+C while the policy server is
 # waiting for a new action chunk, it will raise an exception and the server connection dies.
@@ -93,6 +100,21 @@ def main(args: Args):
     if args.viser_port is not None:
         from avantbot.utils.viser_camera_viewer import ViserCameraViewer
         viewer = ViserCameraViewer(port=args.viser_port)
+
+        if args.urdf_path:
+            avantbot_root = os.path.join(os.path.expanduser("~"), "avantbot")
+            package_paths = {
+                "franka_description": os.path.join(
+                    os.path.expanduser("~"), "franka_ros2", "franka_description"
+                ),
+                "robotiq_description": os.path.join(
+                    avantbot_root, "robots", "robotiq_2f85", "robotiq_ws",
+                    "src", "ros2_robotiq_gripper", "robotiq_description",
+                ),
+            }
+            viewer.load_urdf(args.urdf_path, package_paths)
+            viewer.update_urdf(env.reset_joints, 0.0)
+            print(f"URDF visualisation loaded: {args.urdf_path}")
 
         if args.pointcloud_camera_id is not None:
             import pyzed.sl as sl
@@ -149,6 +171,10 @@ def main(args: Args):
                         points, colors = decode_zed_xyzrgba(xyzrgba)
                         if len(points) > 0:
                             viewer.update_point_cloud("zed2i", points, colors)
+                    viewer.update_urdf(
+                        curr_obs["joint_position"],
+                        curr_obs["gripper_position"],
+                    )
 
                 # Send websocket request to policy server if it's time to predict a new chunk
                 if actions_from_chunk_completed == 0 or actions_from_chunk_completed >= args.open_loop_horizon:
