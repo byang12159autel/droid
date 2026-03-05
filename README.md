@@ -22,7 +22,7 @@ This guide has been used to set up 18 DROID robot platforms over the course of t
 If you encounter issues during setup, please raise them as issues in this github repo.
 
 ---------
-## Avantbot Setup (Single Workstation)
+## Avantbot Droid Setup (Single Workstation)
 
 This fork replaces the Polymetis control stack with [avantbot](https://github.com/autel-robotics/avantbot) CRISP controllers, allowing everything to run on a single workstation without a separate NUC or RT kernel. Tested on Ubuntu 22.04 with cpu core isolation.
 
@@ -96,3 +96,49 @@ print('Joints:', c.get_joint_positions())
 print('Gripper:', c.get_gripper_position())
 "
 ```
+
+---------
+## Running Pi 0.5 Policy (OpenPI)
+
+Run a pretrained pi0.5 DROID policy using the [OpenPI](https://github.com/Physical-Intelligence/openpi) inference server. This requires 3 terminals.
+
+### Prerequisites
+
+- Avantbot CRISP Docker stack working (see Avantbot Setup above)
+- OpenPI repo cloned at `~/openpi` with `uv` installed
+- DROID repo (`~/droid`) installed in the avantbot pixi environment (`humble-openpi-droid`)
+- ZED cameras connected (external + wrist)
+
+### Launch (3 Terminals)
+
+**Terminal 1 -- CRISP Controllers + Robotiq Gripper (Docker)**
+```bash
+cd ~/avantbot/robots/franka_re3/crisp_controllers_demos
+./launch_single_franka_panes.sh "" "" robotiq
+```
+
+**Terminal 2 -- OpenPI Policy Server**
+```bash
+cd ~/openpi
+uv run scripts/serve_policy.py --env=DROID
+```
+Wait for the server to print that it is listening on port 8000 before proceeding.
+
+**Terminal 3 -- DROID Policy Rollout (Host)**
+```bash
+cd ~/droid
+pixi shell -e humble-openpi-droid
+python3 scripts/main.py \
+  --remote_host=127.0.0.1 \
+  --remote_port=8000 \
+  --external_camera=right
+```
+You will be prompted to enter a language instruction. The robot will then execute the policy and save a video of the rollout.
+
+### Notes
+
+- `--external_camera` selects which external ZED camera to feed to the policy (`left` or `right`).
+- Camera serial IDs are configured in `scripts/main.py` (`left_camera_id`, `right_camera_id`, `wrist_camera_id`). Update these if your hardware differs.
+- The policy runs at 15 Hz (DROID control frequency). Each inference returns an action chunk; by default 8 actions are executed open-loop before re-querying (`--open_loop_horizon`).
+- Press Ctrl+C during a rollout to stop it early. After each rollout you can rate success and optionally run another.
+- Results are saved to `results/` as CSV files with per-rollout success scores and video filenames.
