@@ -69,8 +69,8 @@ class CrispFrankaRobot:
 
         self._ik_solver = RobotIKSolver()
 
-        self._ensure_controller("joint_impedance_controller")
         self._robot.set_target_joint(np.array(self.get_joint_positions()))
+        self._ensure_controller("joint_impedance_controller")
         time.sleep(0.3)
         self._controller_not_loaded = False
 
@@ -214,8 +214,8 @@ class CrispFrankaRobot:
                 time_to_goal=time_to_go,
                 blocking=True,
             )
-            self._ensure_controller("joint_impedance_controller")
             self._robot.set_target_joint(np.array(self.get_joint_positions()))
+            self._ensure_controller("joint_impedance_controller")
             time.sleep(0.3)
             self._robot.wait_until_ready(timeout=5.0)
         else:
