@@ -40,7 +40,7 @@ ENV PATH /root/miniconda3/bin:$PATH
 # create conda environment
 RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
     conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
-RUN conda create -n "robot" python=3.7
+RUN conda create -n "robot" python=3.10
 SHELL ["conda", "run", "-n", "robot", "/bin/bash", "-c"]
 
 # install the zed sdk
@@ -62,7 +62,7 @@ RUN apt-get update -y || true ; apt-get install --no-install-recommends lsb-rele
     rm ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run && \
     rm -rf /var/lib/apt/lists/*
 RUN conda install -c conda-forge libstdcxx-ng requests # required for pyzed
-RUN python /usr/local/zed/get_python_api.py && python -m pip install --ignore-installed /app/pyzed-4.0-cp37-cp37m-linux_x86_64.whl
+RUN python /usr/local/zed/get_python_api.py && python -m pip install --ignore-installed /app/pyzed*.whl
 
 # install oculus reader
 RUN add-apt-repository universe && \
@@ -79,6 +79,9 @@ RUN pip3 install -e . && \
     pip3 install dm-robotics-geometry==0.5.0 --no-deps && \
     pip3 install dm-robotics-manipulation==0.5.0 --no-deps && \
     pip3 install dm-robotics-controllers==0.5.0 --no-deps
+
+# openpi dependencies
+RUN pip3 install moviepy openpi-client tyro tqdm pandas
 
 
 # using miniconda instead of anaconda so overwrite sh scripts

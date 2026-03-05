@@ -13,7 +13,6 @@ services:
       ROBOT_IP: ${ROBOT_IP}
       LAPTOP_IP: ${LAPTOP_IP}
       NVIDIA_VISIBLE_DEVICES: all
-      ANDROID_ADB_SERVER_ADDRESS: host.docker.internal
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ${DOCKER_XAUTH}:${DOCKER_XAUTH}
@@ -21,6 +20,7 @@ services:
       - ${ROOT_DIR}/droid/calibration/calibration_info.json:/app/droid/calibration/calibration_info.json
       - ${ROOT_DIR}/data:/app/data
       - ${ROOT_DIR}/cache:/app/cache
+      - ${ROOT_DIR}/scripts/main.py:/app/scripts/main.py
     build: 
       context: ../../
       dockerfile: .docker/laptop/Dockerfile.laptop
@@ -34,4 +34,4 @@ services:
     runtime: nvidia
     privileged: true
     network_mode: "host"
-    command: python /app/scripts/main.py
+    command: python3 /app/scripts/main.py --remote_host=${LAPTOP_IP} --remote_port=8000 --external_camera=right
