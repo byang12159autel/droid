@@ -50,6 +50,9 @@ class Args:
     # Viser camera viewer (set to a port like 8085 to enable, None to disable)
     viser_port: int | None = None
 
+    # ZED camera serial to stream point clouds for (requires --viser_port, None to disable)
+    pointcloud_camera_id: str | None = "32923065"
+
 
 # We are using Ctrl+C to optionally terminate rollouts early -- however, if we press Ctrl+C while the policy server is
 # waiting for a new action chunk, it will raise an exception and the server connection dies.
@@ -85,9 +88,24 @@ def main(args: Args):
 
     # Optional Viser camera viewer
     viewer = None
+    pc_zed_cam = None
+    pc_mat = None
     if args.viser_port is not None:
         from avantbot.utils.viser_camera_viewer import ViserCameraViewer
         viewer = ViserCameraViewer(port=args.viser_port)
+
+        if args.pointcloud_camera_id is not None:
+            import pyzed.sl as sl
+            from avantbot.utils.viser_camera_viewer import decode_zed_xyzrgba
+            pc_zed_cam = env.camera_reader.camera_dict.get(args.pointcloud_camera_id)
+            if pc_zed_cam is not None:
+                pc_mat = sl.Mat()
+                print(f"Point cloud enabled for ZED {args.pointcloud_camera_id}")
+            else:
+                print(
+                    f"WARNING: pointcloud_camera_id={args.pointcloud_camera_id} "
+                    f"not found in cameras: {list(env.camera_reader.camera_dict.keys())}"
+                )
 
     # Connect to the policy server
     policy_client = websocket_client_policy.WebsocketClientPolicy(args.remote_host, args.remote_port)
@@ -125,6 +143,12 @@ def main(args: Args):
                         right=curr_obs.get("right_image"),
                         wrist=curr_obs.get("wrist_image"),
                     )
+                    if pc_zed_cam is not None:
+                        pc_zed_cam._cam.retrieve_measure(pc_mat, sl.MEASURE.XYZRGBA)
+                        xyzrgba = pc_mat.get_data().copy()
+                        points, colors = decode_zed_xyzrgba(xyzrgba)
+                        if len(points) > 0:
+                            viewer.update_point_cloud("zed2i", points, colors)
 
                 # Send websocket request to policy server if it's time to predict a new chunk
                 if actions_from_chunk_completed == 0 or actions_from_chunk_completed >= args.open_loop_horizon:
