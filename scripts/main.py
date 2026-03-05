@@ -111,6 +111,10 @@ def main(args: Args):
                     avantbot_root, "robots", "robotiq_2f85", "robotiq_ws",
                     "src", "ros2_robotiq_gripper", "robotiq_description",
                 ),
+                "crisp_controllers_robot_demos": os.path.join(
+                    avantbot_root, "robots", "franka_re3", "crisp_controllers_demos",
+                    "crisp_controllers_robot_demos",
+                ),
             }
             viewer.load_urdf(args.urdf_path, package_paths)
             viewer.update_urdf(env.reset_joints, 0.0)
