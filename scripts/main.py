@@ -51,7 +51,7 @@ class Args:
     viser_port: int | None = None
 
     # ZED camera serial to stream point clouds for (requires --viser_port, None to disable)
-    pointcloud_camera_id: str | None = "32923065"
+    pointcloud_camera_id: str | None = "17605999"
 
     # URDF visualization (requires --viser_port; set to "" to disable)
     urdf_path: str = os.path.join(
@@ -172,9 +172,12 @@ def main(args: Args):
                     if pc_zed_cam is not None:
                         pc_zed_cam._cam.retrieve_measure(pc_mat, sl.MEASURE.XYZRGBA)
                         xyzrgba = pc_mat.get_data().copy()
-                        points, colors = decode_zed_xyzrgba(xyzrgba)
+                        points, colors = decode_zed_xyzrgba(xyzrgba, rotate_to_z_up=False)
+                        points = points / 1000.0
+                        points[:, [0, 1]] = points[:, [1, 0]]
+                        points[:, 1] *= -1
                         if len(points) > 0:
-                            viewer.update_point_cloud("zed2i", points, colors)
+                            viewer.update_ee_point_cloud(points, colors)
                     viewer.update_urdf(
                         curr_obs["joint_position"],
                         curr_obs["gripper_position"],
