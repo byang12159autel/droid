@@ -1,5 +1,6 @@
 # ruff: noqa
 
+import collections
 import contextlib
 import dataclasses
 import datetime
@@ -7,12 +8,14 @@ import faulthandler
 import os
 import signal
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from moviepy import ImageSequenceClip
 import numpy as np
 from openpi_client import image_tools
 from openpi_client import websocket_client_policy
 import pandas as pd
 from PIL import Image
+from avantbot.perception.droid_camera_reader import DroidCameraReader
 from droid.robot_env import RobotEnv
 import tqdm
 import tyro
@@ -38,8 +41,9 @@ class Args:
     # Rollout parameters
     max_timesteps: int = 600
     # How many actions to execute from a predicted action chunk before querying policy server again
-    # 8 is usually a good default (equals 0.5 seconds of action execution).
-    open_loop_horizon: int = 8
+    open_loop_horizon: int = 50
+    # Fraction of open_loop_horizon at which to trigger async inference for the next chunk
+    action_queue_threshold: float = 0.5
 
     # Remote server parameters
     remote_host: str = "0.0.0.0"  # point this to the IP address of the policy server, e.g., "192.168.1.100"
@@ -83,6 +87,22 @@ def prevent_keyboard_interrupt():
             raise KeyboardInterrupt
 
 
+def _infer_actions(policy_client, request_data):
+    return policy_client.infer(request_data)["actions"]
+
+
+def _build_request_data(args: Args, curr_obs: dict, instruction: str) -> dict:
+    return {
+        "observation/exterior_image_1_left": image_tools.resize_with_pad(
+            curr_obs[f"{args.external_camera}_image"], 224, 224
+        ),
+        "observation/wrist_image_left": image_tools.resize_with_pad(curr_obs["wrist_image"], 224, 224),
+        "observation/joint_position": curr_obs["joint_position"],
+        "observation/gripper_position": curr_obs["gripper_position"],
+        "prompt": instruction,
+    }
+
+
 def main(args: Args):
     # Make sure external camera is specified by user -- we only use one external camera for the policy
     assert (
@@ -91,15 +111,42 @@ def main(args: Args):
 
     # Initialize the Panda environment. Using joint velocity action space and gripper position action space is very important.
     env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
+    env.camera_reader.disable_cameras()
+    env.camera_reader = DroidCameraReader(
+        camera_kwargs={"resolution": "HD720", "fps": 15, "enable_depth": True},
+    )
     print("Created the droid env!")
 
+    required_cameras = {"wrist": args.wrist_camera_id}
+    if args.external_camera == "left":
+        required_cameras["left (external)"] = args.left_camera_id
+    elif args.external_camera == "right":
+        required_cameras["right (external)"] = args.right_camera_id
+
+    available = set(env.camera_reader.camera_dict.keys())
+    missing = {name: sid for name, sid in required_cameras.items() if sid not in available}
+    if missing:
+        missing_str = ", ".join(f"{name} serial={sid}" for name, sid in missing.items())
+        raise RuntimeError(
+            f"Required camera(s) not found: {missing_str}. "
+            f"Available cameras: {sorted(available)}. "
+            f"Check connections or update --left_camera_id / --right_camera_id / --wrist_camera_id."
+        )
+
     # Optional Viser camera viewer
-    viewer = None
+    cam_panel = None
+    urdf_overlay = None
+    pc_mgr = None
     pc_zed_cam = None
     pc_mat = None
     if args.viser_port is not None:
-        from avantbot.utils.viser_camera_viewer import ViserCameraViewer
-        viewer = ViserCameraViewer(port=args.viser_port)
+        from avantbot.viz import ViserViewer
+        from avantbot.viz.components import CameraPanel, PointCloudManager, UrdfOverlay
+
+        viewer = ViserViewer(port=args.viser_port)
+
+        cam_panel = CameraPanel(jpeg_quality=80)
+        viewer.add_component("cameras", cam_panel)
 
         if args.urdf_path:
             avantbot_root = os.path.join(os.path.expanduser("~"), "avantbot")
@@ -116,13 +163,24 @@ def main(args: Args):
                     "crisp_controllers_robot_demos",
                 ),
             }
-            viewer.load_urdf(args.urdf_path, package_paths)
-            viewer.update_urdf(env.reset_joints, 0.0)
+            urdf_overlay = UrdfOverlay(
+                args.urdf_path,
+                [f"fr3_joint{i}" for i in range(1, 8)],
+                package_paths=package_paths,
+                gripper_joint="robotiq_85_left_knuckle_joint",
+                gripper_range=(0.0, 0.8),
+            )
+            viewer.add_component("urdf", urdf_overlay)
+            urdf_overlay.update(env.reset_joints, 0.0)
             print(f"URDF visualisation loaded: {args.urdf_path}")
 
         if args.pointcloud_camera_id is not None:
             import pyzed.sl as sl
-            from avantbot.utils.viser_camera_viewer import decode_zed_xyzrgba
+            from avantbot.perception.zed_utils import decode_zed_xyzrgba
+
+            pc_mgr = PointCloudManager(default_subsample=4)
+            viewer.add_component("pointclouds", pc_mgr)
+
             pc_zed_cam = env.camera_reader.camera_dict.get(args.pointcloud_camera_id)
             if pc_zed_cam is not None:
                 pc_mat = sl.Mat()
@@ -141,9 +199,11 @@ def main(args: Args):
     while True:
         instruction = input("Enter instruction: ")
 
-        # Rollout parameters
-        actions_from_chunk_completed = 0
-        pred_action_chunk = None
+        # Async action queue for real-time chunking
+        action_queue: collections.deque = collections.deque()
+        pending_future: Future | None = None
+        queue_threshold = int(args.open_loop_horizon * args.action_queue_threshold)
+        executor = ThreadPoolExecutor(max_workers=1)
 
         # Prepare to save video of rollout
         timestamp = datetime.datetime.now().strftime("%Y_%m_%d_%H:%M:%S")
@@ -157,69 +217,68 @@ def main(args: Args):
                 curr_obs = _extract_observation(
                     args,
                     env.get_observation(),
-                    # Save the first observation to disk
                     save_to_disk=t_step == 0,
                 )
 
                 video.append(curr_obs[f"{args.external_camera}_image"])
 
-                if viewer is not None:
-                    viewer.update(
+                if cam_panel is not None:
+                    cam_panel.update(
                         left=curr_obs.get("left_image"),
                         right=curr_obs.get("right_image"),
                         wrist=curr_obs.get("wrist_image"),
                     )
-                    if pc_zed_cam is not None:
-                        pc_zed_cam._cam.retrieve_measure(pc_mat, sl.MEASURE.XYZRGBA)
+                    if pc_zed_cam is not None and pc_mgr is not None and urdf_overlay is not None:
+                        pc_zed_cam.zed.retrieve_measure(pc_mat, sl.MEASURE.XYZRGBA)
                         xyzrgba = pc_mat.get_data().copy()
-                        points, colors = decode_zed_xyzrgba(xyzrgba, rotate_to_z_up=False)
-                        points = points / 1000.0
+                        pc = decode_zed_xyzrgba(xyzrgba, stride=1, rotate_to_z_up=False)
+                        stride = pc_mgr.subsample
+                        points = pc.points[::stride]
+                        colors = pc.colors[::stride]
                         points[:, [0, 1]] = points[:, [1, 0]]
                         points[:, 1] *= -1
                         if len(points) > 0:
-                            viewer.update_ee_point_cloud(points, colors)
-                    viewer.update_urdf(
-                        curr_obs["joint_position"],
-                        curr_obs["gripper_position"],
+                            urdf_overlay.update_ee_point_cloud(points, colors, point_size=pc_mgr.point_size)
+                    if urdf_overlay is not None:
+                        urdf_overlay.update(
+                            curr_obs["joint_position"],
+                            curr_obs["gripper_position"],
+                        )
+
+                # Check if pending async inference has completed
+                if pending_future is not None and pending_future.done():
+                    new_chunk = pending_future.result()
+                    assert new_chunk.ndim == 2 and new_chunk.shape[1] == 8, (
+                        f"Unexpected action chunk shape: {new_chunk.shape}, expected (N, 8)"
                     )
+                    action_queue.clear()
+                    action_queue.extend(new_chunk[: args.open_loop_horizon])
+                    pending_future = None
 
-                # Send websocket request to policy server if it's time to predict a new chunk
-                if actions_from_chunk_completed == 0 or actions_from_chunk_completed >= args.open_loop_horizon:
-                    actions_from_chunk_completed = 0
+                # Request new chunk if queue is at/below threshold and no request in flight
+                if len(action_queue) <= queue_threshold and pending_future is None:
+                    request_data = _build_request_data(args, curr_obs, instruction)
+                    pending_future = executor.submit(_infer_actions, policy_client, request_data)
 
-                    # We resize images on the robot laptop to minimize the amount of data sent to the policy server
-                    # and improve latency.
-                    request_data = {
-                        "observation/exterior_image_1_left": image_tools.resize_with_pad(
-                            curr_obs[f"{args.external_camera}_image"], 224, 224
-                        ),
-                        "observation/wrist_image_left": image_tools.resize_with_pad(curr_obs["wrist_image"], 224, 224),
-                        "observation/joint_position": curr_obs["joint_position"],
-                        "observation/gripper_position": curr_obs["gripper_position"],
-                        "prompt": instruction,
-                    }
-
-                    # Wrap the server call in a context manager to prevent Ctrl+C from interrupting it
-                    # Ctrl+C will be handled after the server call is complete
+                # If queue is empty, block until inference completes (fallback to synchronous)
+                if len(action_queue) == 0:
+                    assert pending_future is not None
                     with prevent_keyboard_interrupt():
-                        pred_action_chunk = policy_client.infer(request_data)["actions"]
-                    assert pred_action_chunk.ndim == 2 and pred_action_chunk.shape[1] == 8, (
-                        f"Unexpected action chunk shape: {pred_action_chunk.shape}, expected (N, 8)"
+                        new_chunk = pending_future.result()
+                    assert new_chunk.ndim == 2 and new_chunk.shape[1] == 8, (
+                        f"Unexpected action chunk shape: {new_chunk.shape}, expected (N, 8)"
                     )
+                    action_queue.extend(new_chunk[: args.open_loop_horizon])
+                    pending_future = None
 
-                # Select current action to execute from chunk
-                action = pred_action_chunk[actions_from_chunk_completed]
-                actions_from_chunk_completed += 1
+                action = action_queue.popleft()
 
                 # Binarize gripper action
                 if action[-1].item() > 0.5:
-                    # action[-1] = 1.0
                     action = np.concatenate([action[:-1], np.ones((1,))])
                 else:
-                    # action[-1] = 0.0
                     action = np.concatenate([action[:-1], np.zeros((1,))])
 
-                # clip all dimensions of action to [-1, 1]
                 action = np.clip(action, -1, 1)
 
                 env.step(action)
@@ -230,6 +289,8 @@ def main(args: Args):
                     time.sleep(1 / DROID_CONTROL_FREQUENCY - elapsed_time)
             except KeyboardInterrupt:
                 break
+
+        executor.shutdown(wait=False)
 
         video = np.stack(video)
         save_filename = "video_" + timestamp
@@ -262,6 +323,8 @@ def main(args: Args):
             break
         env.reset()
 
+    env.camera_reader.stop()
+
     os.makedirs("results", exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%I:%M%p_%B_%d_%Y")
     csv_filename = os.path.join("results", f"eval_{timestamp}.csv")
@@ -281,14 +344,6 @@ def _extract_observation(args: Args, obs_dict, *, save_to_disk=False):
             right_image = image_observations[key]
         elif args.wrist_camera_id in key and "left" in key:
             wrist_image = image_observations[key]
-
-    # Drop the alpha dimension and convert to RGB (BGRA -> RGB)
-    if left_image is not None:
-        left_image = left_image[..., :3][..., ::-1]
-    if right_image is not None:
-        right_image = right_image[..., :3][..., ::-1]
-    if wrist_image is not None:
-        wrist_image = wrist_image[..., :3][..., ::-1]
 
     # In addition to image observations, also capture the proprioceptive state
     robot_state = obs_dict["robot_state"]
