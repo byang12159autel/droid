@@ -20,8 +20,12 @@ def gather_zed_cameras():
         return []
 
     for cam in cameras:
-        cam = ZedCamera(cam)
-        all_zed_cameras.append(cam)
+        try:
+            cam = ZedCamera(cam)
+            all_zed_cameras.append(cam)
+        except Exception as e:
+            sn = getattr(cam, "serial_number", "unknown")
+            print(f"WARNING: Failed to initialize ZED camera {sn}: {e}")
 
     return all_zed_cameras
 
@@ -117,38 +121,38 @@ class ZedCamera:
         self.current_mode = "trajectory"
 
     def _configure_camera(self, init_params):
-        # Close Existing Camera #
         self.disable_camera()
 
-        # Initialize Readers #
-        self._cam = sl.Camera()
-        self._sbs_img = sl.Mat()
-        self._left_img = sl.Mat()
-        self._right_img = sl.Mat()
-        self._left_depth = sl.Mat()
-        self._right_depth = sl.Mat()
-        self._left_pointcloud = sl.Mat()
-        self._right_pointcloud = sl.Mat()
-        self._runtime = sl.RuntimeParameters()
+        try:
+            self._cam = sl.Camera()
+            self._sbs_img = sl.Mat()
+            self._left_img = sl.Mat()
+            self._right_img = sl.Mat()
+            self._left_depth = sl.Mat()
+            self._right_depth = sl.Mat()
+            self._left_pointcloud = sl.Mat()
+            self._right_pointcloud = sl.Mat()
+            self._runtime = sl.RuntimeParameters()
 
-        # Open Camera #
-        self._current_params = init_params
-        sl_params = sl.InitParameters(**init_params)
-        sl_params.set_from_serial_number(int(self.serial_number))
-        sl_params.camera_image_flip = sl.FLIP_MODE.OFF
-        status = self._cam.open(sl_params)
-        if status != sl.ERROR_CODE.SUCCESS:
-            print(f"WARNING: Camera {self.serial_number} failed to open (status={status}), skipping")
+            self._current_params = init_params
+            sl_params = sl.InitParameters(**init_params)
+            sl_params.set_from_serial_number(int(self.serial_number))
+            sl_params.camera_image_flip = sl.FLIP_MODE.OFF
+            status = self._cam.open(sl_params)
+            if status != sl.ERROR_CODE.SUCCESS:
+                print(f"WARNING: Camera {self.serial_number} failed to open (status={status}), skipping")
+                self.current_mode = "disabled"
+                return
+
+            self.latency = int(2.5 * (1e3 / sl_params.camera_fps))
+            calib_params = self._cam.get_camera_information().camera_configuration.calibration_parameters
+            self._intrinsics = {
+                self.serial_number + "_left": self._process_intrinsics(calib_params.left_cam),
+                self.serial_number + "_right": self._process_intrinsics(calib_params.right_cam),
+            }
+        except Exception as e:
+            print(f"WARNING: Camera {self.serial_number} failed during configuration: {e}")
             self.current_mode = "disabled"
-            return
-
-        # Save Intrinsics #
-        self.latency = int(2.5 * (1e3 / sl_params.camera_fps))
-        calib_params = self._cam.get_camera_information().camera_configuration.calibration_parameters
-        self._intrinsics = {
-            self.serial_number + "_left": self._process_intrinsics(calib_params.left_cam),
-            self.serial_number + "_right": self._process_intrinsics(calib_params.right_cam),
-        }
 
     ### Calibration Utilities ###
     def _process_intrinsics(self, params):
