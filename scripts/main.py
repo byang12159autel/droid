@@ -110,8 +110,9 @@ def main(args: Args):
     ), f"Please specify an external camera to use for the policy, choose from ['left', 'right'], but got {args.external_camera}"
 
     # Initialize the Panda environment. Using joint velocity action space and gripper position action space is very important.
-    env = RobotEnv(action_space="joint_velocity", gripper_action_space="position")
-    env.camera_reader.disable_cameras()
+    # skip_cameras=True prevents MultiCameraWrapper from opening ZED cameras (which would
+    # conflict with DroidCameraReader and cause a segfault).
+    env = RobotEnv(action_space="joint_velocity", gripper_action_space="position", skip_cameras=True)
     env.camera_reader = DroidCameraReader(
         camera_kwargs={"resolution": "HD720", "fps": 15, "enable_depth": True},
     )

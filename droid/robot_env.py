@@ -13,7 +13,7 @@ from droid.misc.transformations import change_pose_frame
 
 
 class RobotEnv(gym.Env):
-    def __init__(self, action_space="cartesian_velocity", gripper_action_space=None, camera_kwargs={}, do_reset=True):
+    def __init__(self, action_space="cartesian_velocity", gripper_action_space=None, camera_kwargs={}, do_reset=True, skip_cameras=False):
         # Initialize Gym Environment
         super().__init__()
 
@@ -39,7 +39,10 @@ class RobotEnv(gym.Env):
             self._robot = ServerInterface(ip_address=nuc_ip)
 
         # Create Cameras
-        self.camera_reader = MultiCameraWrapper(camera_kwargs)
+        if skip_cameras:
+            self.camera_reader = None
+        else:
+            self.camera_reader = MultiCameraWrapper(camera_kwargs)
         self.calibration_dict = load_calibration_info()
         self.camera_type_dict = camera_type_dict
 
